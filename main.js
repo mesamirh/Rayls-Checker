@@ -2,42 +2,42 @@ const fs = require("fs");
 const axios = require("axios");
 const { ethers } = require("ethers");
 const colors = require("colors");
+const readline = require("readline");
 
 // ---------------- CONFIGURATION ----------------
 const CONFIG = {
   API_BASE_URL: "https://acs-v4.clique.tech",
   APP_ID: "rayls",
   DEPLOYMENT: "Distributor",
-  // File containing addresses
   INPUT_FILE: "wallet.txt",
 };
 // -----------------------------------------------
 
+// User Input Interface
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout,
+});
+
+function askQuestion(query) {
+  return new Promise((resolve) => rl.question(query, resolve));
+}
+
 async function checkAddress(address, index, totalWallets) {
-  // Clean the address (remove spaces)
-  const cleanAddress = address.trim();
-
-  // Skip invalid lines
-  if (!cleanAddress || !cleanAddress.startsWith("0x")) {
-    return;
-  }
-
   try {
     const payload = {
       appId: CONFIG.APP_ID,
       deployment: CONFIG.DEPLOYMENT,
-      address: cleanAddress.toLowerCase(),
+      address: address.toLowerCase(),
     };
 
-    // Call the API
     const response = await axios.post(
       `${CONFIG.API_BASE_URL}/allocations`,
       payload,
       {
         headers: {
           "Content-Type": "application/json",
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "User-Agent": "Mozilla/5.0",
         },
       }
     );
@@ -50,49 +50,91 @@ async function checkAddress(address, index, totalWallets) {
       allocations.forEach((batch) => {
         totalAmount += BigInt(batch.allocation || 0);
       });
-
       const formatted = ethers.formatEther(totalAmount);
 
       console.log(
-        `${progress} ${cleanAddress} : ${"✅ ELIGIBLE".green.bold} | ${
+        `${progress} ${address} : ${"✅ ELIGIBLE".green.bold} | ${
           formatted.yellow
         } RLS`
       );
-
-      // Save eligible wallets to a separate file (optional)
-      fs.appendFileSync("eligible.txt", `${cleanAddress} : ${formatted} RLS\n`);
+      fs.appendFileSync("eligible.txt", `${address} : ${formatted} RLS\n`);
     } else {
-      console.log(`${progress} ${cleanAddress} : ${"❌ Not Eligible".red}`);
+      console.log(`${progress} ${address} : ${"❌ Not Eligible".red}`);
     }
   } catch (error) {
-    console.log(`[Error] ${cleanAddress} : ${error.message}`.yellow);
+    console.log(`[Error] ${address} : ${error.message}`.yellow);
   }
 }
 
 async function run() {
-  console.log("Reading wallet.txt...".cyan);
+  console.clear();
+  console.log("Rayls Airdrop Checker".cyan.bold);
+  console.log("---------------------");
+
+  // --- CLI PROMPT ---
+  console.log("What is inside your wallet.txt file?");
+  console.log("1. Public Addresses (starts with 0x...)".blue);
+  console.log("2. Private Keys (64 characters)".magenta);
+
+  const answer = await askQuestion("\nType 1 or 2 and press Enter: ".yellow);
+
+  let isPrivateKeyMode = false;
+
+  if (answer.trim() === "2") {
+    isPrivateKeyMode = true;
+    console.log("\n[Mode Selected] Reading PRIVATE KEYS...".magenta.bold);
+  } else if (answer.trim() === "1") {
+    console.log("\n[Mode Selected] Reading PUBLIC ADDRESSES...".blue.bold);
+  } else {
+    console.log("\nInvalid selection. Exiting.".red);
+    process.exit(1);
+  }
+  // ------------------
 
   try {
-    // Read file and split by new line
     const data = fs.readFileSync(CONFIG.INPUT_FILE, "utf8");
-    const wallets = data.split(/\r?\n/).filter((line) => line.trim() !== "");
+    const lines = data.split(/\r?\n/).filter((line) => line.trim() !== "");
 
-    console.log(
-      `Loaded ${wallets.length} wallets. Starting check...`.white.bold
-    );
+    console.log(`Loaded ${lines.length} lines. Processing...`.white);
     console.log("---------------------------------------------------");
 
-    for (let i = 0; i < wallets.length; i++) {
-      await checkAddress(wallets[i], i, wallets.length);
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i].trim();
+      let addressToCheck = null;
 
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      if (isPrivateKeyMode) {
+        try {
+          // Convert Private Key to Address
+          if (!line.startsWith("0x")) line = "0x" + line;
+          const wallet = new ethers.Wallet(line);
+          addressToCheck = wallet.address;
+        } catch (e) {
+          console.log(`[${i + 1}] Invalid Private Key. Skipping.`.red);
+          continue;
+        }
+      } else {
+        // Validate Public Address
+        if (ethers.isAddress(line)) {
+          addressToCheck = line;
+        } else {
+          console.log(`[${i + 1}] Invalid Address format. Skipping.`.red);
+          continue;
+        }
+      }
+
+      // Run the check
+      await checkAddress(addressToCheck, i, lines.length);
+
+      // Short delay
+      await new Promise((r) => setTimeout(r, 200));
     }
 
     console.log("---------------------------------------------------");
-    console.log("Done! Check 'eligible.txt' for winners.".cyan.bold);
+    console.log("Done. Results saved to eligible.txt".cyan.bold);
   } catch (err) {
-    console.error("Error: Could not read wallet.txt".red);
-    console.error("Make sure the file exists in the same folder.");
+    console.error("Error: wallet.txt not found.".red);
+  } finally {
+    rl.close();
   }
 }
 
